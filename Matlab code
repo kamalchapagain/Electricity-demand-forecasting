@@ -1,0 +1,621 @@
+%Whole week forecasting (Mon to Sun)including correlated error part. 
+% After progress presentation, this program is now upgrading by
+% substituting last day's data in place of outliers.
+
+%The result is published in journal (https://www.mdpi.com/1996-1073/11/4/818)
+
+clear all;
+clc;
+rng('default')
+
+addpath('FinalizeFunction');
+
+tic;
+st=input('Do you want to load new data?--> type ''y'' or ''n ''','s')
+if st=='y'
+    display('importing data from Excel....');
+    [num1,text1]=xlsread('Alldata_2012_13.xlsx','2012_13_Weekly');
+    save num1.mat
+else
+    display('Loading old data....');
+    load num1
+end   
+toc
+
+%% remove outliers for load and temp
+tic;
+num11=num1; % to check number of outliers
+Load=num1(1:end,1:48);
+WeekTmp=num1(1:end,49:96)
+for i=1:48
+    muLoad(:,i)=mean(Load(:,i))
+    muTmp(:,i)=mean(WeekTmp(:,i))
+    sigmaLoad(:,i)=std(Load(:,i))
+    sigmaTmp(:,i)=std(WeekTmp(:,i))
+end
+
+[n,p] = size(Load);
+% Create a matrix of mean values by
+% replicating the mu vector for n rows
+MeanMatLoad = repmat(muLoad,n,1);
+MeanMatTmp=repmat(muTmp,n,1);
+% Create a matrix of standard deviation values by
+% replicating the sigma vector for n rows
+SigmaMatLoad = repmat(sigmaLoad,n,1);
+SigmaMatTmp=repmat(sigmaTmp,n,1);
+% Create a matrix of zeros and ones, where ones indicate
+% the location of outliers
+outliersLoad = abs(Load - MeanMatLoad)>3*SigmaMatLoad;
+outliersTmp=abs(WeekTmp-MeanMatTmp)>3*SigmaMatTmp;
+
+%for load outliers
+for i=2:n
+    for j=1:p
+        if abs(Load(i,j)-MeanMatLoad(i,j))>3*SigmaMatLoad(i,j)
+            Load(i,j)=Load(i-1,j);
+            display('Found Load outlier... \n ')
+        else
+            display('Searching Load outlier... \n ')
+        end
+    end
+end
+pause(5)
+%for temperature outliers
+for i=2:n
+    for j=1:p
+        if abs(WeekTmp(i,j)-MeanMatTmp(i,j))>3*SigmaMatTmp(i,j)
+            WeekTmp(i,j)=WeekTmp(i-1,j);
+            display('Found Temperature outlier... \n ')
+        else
+            display('Searching Temperature outlier... \n ')
+        end
+    end
+end
+
+% Calculate the number of outliers in each column
+noutLoad = sum(outliersLoad)
+noutTmp=sum(outliersTmp)
+fprintf('Total %d  Load outliers are replaced with previous day data \n',sum(noutLoad))
+noutTmp = sum(outliersTmp)
+fprintf('Total %d  Temperature outliers are replaced with previous day data \n',sum(noutTmp))
+toc
+%remove entire row that contains outliers
+
+% num1(any(outliers,2),:) = [];
+% nosofdays=(rows(num11)-rows(num1));
+
+%fprintf('Total %d  days containing outliers are removed \n',nosofdays)
+%% 
+
+display('======== Welcome to short term Load forecasting =======');
+
+%Load=num1(1:end,1:48);
+
+%% taking natural log for Load
+%Load=log(Load);
+
+%% continue
+
+Y11=Load;
+%WeekTmp=num1(1:end,49:96);
+
+WeekTmpSq=WeekTmp.*WeekTmp; WeekTmpCb=WeekTmpSq.*WeekTmp; 
+Trend=1:rows(Load); Trend=Trend(:);
+Holiday=num1(1:end,100); %holiday
+DayAfterHoliday=num1(1:end,101); %DAH=Day after holiday
+DayBfHoliday=num1(1:end,102);
+Weekday=num1(1:end,103); Load8am=num1(1:end,104); % it is yesterday's temperature our simpliciy, ohterwie can asure that
+MidNightTmpMA=num1(1:end,105); %moving average of 7 days mid-night temperature.
+YesterdayMaxTmp=num1(1:end,106); % yestdy maxmimum temp
+WeekDummy=num1(1:end,107:112); MonthDummy=num1(1:end,114:124); N=rows(WeekTmp);
+[JanTmp FebTmp MarTmp AprTmp MayTmp JunTmp JulTmp AugTmp SepTmp OctTmp NovTmp]=MonthTmpFunction(N,WeekTmp,MonthDummy);
+[JanTmpSq FebTmpSq MarTmpSq AprTmpSq MayTmpSq JunTmpSq JulTmpSq AugTmpSq SepTmpSq OctTmpSq NovTmpSq]=MonthTmpFunction(N,WeekTmpSq,MonthDummy);   
+  
+toc
+
+Y1=Y11;
+
+TotalDay=rows(Y11);
+TrainDay=639 %see the num1 from workspace and determine exact date for trainday and forecast day
+%TrainDay=647 % to see forecast 2013-10-20 which have lowest mape
+ValDay=TotalDay-TrainDay
+% ForcastDay=31 %ValDay (Forecast Day must be upto Validataion Day)
+% ForcastDay=1
+% Cor_lag=6
+
+ForcastDay=input('Enter the forecast days: ')
+cor_lag=input('Enter the Number of correlation lag: ')
+
+BCoeffi=zeros(ForcastDay,42);% for saving all the beta coefficients
+Varr=zeros(ForcastDay,42); % for saving all the variance 
+Errr=zeros(ForcastDay,48); % for saving deviation of forecast from true value
+k=1
+tic
+%clear Forct;
+while k<=ForcastDay
+for j=1:48
+    YLoad=Y1(k:TrainDay-1+k,j); % Taking data k to TrainDay+k, if TrainDay=1000,Y takes1001 data and after AR2 will be just 999 
+    AWeekTmp=WeekTmp(k:TrainDay-1+k,j);
+    AWeekTmpSq=WeekTmpSq(k:TrainDay-1+k,j);
+    AWeekTmpCb=WeekTmpCb(k:TrainDay-1+k,j);
+    ATrend=Trend(k:TrainDay-1+k,1);
+    AHoliday=Holiday(k:TrainDay-1+k,1);
+    ADayAfterHoliday=DayAfterHoliday(k:TrainDay-1+k,1);
+    AWeekday=Weekday(k:TrainDay-1+k,1);
+    ADayBfHoliday=DayBfHoliday(k:TrainDay-1+k,1);
+    ALoad8am=Load8am(k:TrainDay-1+k,1);
+    AMidNightTmpMA=MidNightTmpMA(k:TrainDay-1+k,1);
+    AYesterdayMaxTmp=YesterdayMaxTmp(k:TrainDay-1+k,1);
+    AWeekDummy=WeekDummy(k:TrainDay-1+k,:);
+    AMonthDummy=MonthDummy(k:TrainDay-1+k,:);
+    AJanTmp=JanTmp(k:TrainDay-1+k,j); AFebTmp=FebTmp(k:TrainDay-1+k,j); 
+    AMarTmp=MarTmp(k:TrainDay-1+k,j); AAprTmp=AprTmp(k:TrainDay-1+k,j);
+    AMayTmp=MayTmp(k:TrainDay-1+k,j); AJunTmp=JunTmp(k:TrainDay-1+k,j); 
+    AJulTmp=JulTmp(k:TrainDay-1+k,j); AAugTmp=AugTmp(k:TrainDay-1+k,j);
+    ASepTmp=SepTmp(k:TrainDay-1+k,j);AOctTmp=OctTmp(k:TrainDay-1+k,j);
+    ANovTmp=NovTmp(k:TrainDay-1+k,j);
+    T=rows(YLoad);
+%our model is
+    X=[ones(T,1) ATrend lag0(YLoad,1) lag0(YLoad,2) AWeekTmp AWeekTmpSq AWeekTmpCb AHoliday...
+    AWeekday ADayAfterHoliday ADayBfHoliday ALoad8am AMidNightTmpMA AYesterdayMaxTmp AWeekDummy AMonthDummy...
+    AJanTmp AFebTmp AMarTmp AAprTmp AMayTmp AJunTmp AJulTmp AAugTmp ASepTmp AOctTmp ANovTmp];% Size of regressor
+
+% %remove trend
+% X=[ones(T,1) lag0(YLoad,1) lag0(YLoad,2) AWeekTmp AWeekTmpSq AWeekTmpCb AHoliday...
+%     AWeekday ADayAfterHoliday ADayBfHoliday ALoad8am AMidNightTmpMA AYesterdayMaxTmp AWeekDummy AMonthDummy...
+%     AJanTmp AFebTmp AMarTmp AAprTmp AMayTmp AJunTmp AJulTmp AAugTmp ASepTmp AOctTmp ANovTmp];% Size of regressor
+
+%% remove MA obs value
+    YLoad=YLoad(8:end); % Taking data k to TrainDay+k, if TrainDay=1000,Y takes1001 data and after AR2 will be just 999
+    AWeekTmp=AWeekTmp(8:end,:);
+    AWeekTmpSq=AWeekTmpSq(8:end,:);
+    AWeekTmpCb=AWeekTmpCb(8:end,:);
+    ATrend=ATrend(8:end);
+    AHoliday=AHoliday(8:end);
+    ADayAfterHoliday=ADayAfterHoliday(8:end);
+    ADayBfHoliday=ADayBfHoliday(8:end);
+    AWeekday=AWeekday(8:end);
+    ALoad8am=ALoad8am(8:end);
+    AMidNightTmpMA=AMidNightTmpMA(8:end);
+    AYesterdayMaxTmp=AYesterdayMaxTmp(8:end);
+    AWeekDummy=AWeekDummy(8:end,:);
+    AMonthDummy=AMonthDummy(8:end,:);
+    AJanTmp=AJanTmp(8:end,:); AFebTmp=AFebTmp(8:end,:); AMarTmp=AMarTmp(8:end,:); AAprTmp=AAprTmp(8:end,:);
+    AMayTmp=AMayTmp(8:end); AJunTmp=AJunTmp(8:end); AJulTmp=AJulTmp(8:end); AAugTmp=AAugTmp(8:end,:);
+    ASepTmp=ASepTmp(8:end,:);AOctTmp=AOctTmp(8:end,:);ANovTmp=ANovTmp(8:end,:);
+    X=X(8:end,:);
+    T=rows(X);
+    
+    %prior calculation from ols
+    
+    [prior,ols_stat]=PriorOls(YLoad,X);
+    
+    B0=prior;
+    Sigma0=eye(42); % this is flat prior for sigma, lets set sigma0=constant*Var_ols
+    %priors for sigma2
+    T0=1;
+    D0=0.1;
+    
+    %prior for rho : correlation error coefficient
+    %rho0=[0;0;0;0;0;0]; %six lags
+    
+    rho0=zeros(cor_lag,1);
+    
+    Sigma0r=eye(cor_lag); %same size of correlated matrix
+    
+    %starting values
+    B=B0;
+    rho=rho0;
+    
+    sigma2=10;
+    reps=2000;   %total numbers of Gibbs iterations
+    burn=1000;   %percent of burn-in iterations
+    out1=[]; %will save forecast
+    out2=[];
+    out3=[];
+    out4=[];
+
+%% Gibbs
+
+for i=1:reps
+    %step 2 Sample B conditional on sigma N(M*,V*)
+    %remove serial correlation first
+    
+    [m,n]=size(X);
+    
+    lagpartY=ones(m,1);
+    lagpartX=zeros(rows(YLoad),n);
+    
+    for i=1:cor_lag
+        lagpartY=lagpartY-lag0(YLoad,i)*rho(i);
+        lagpartX=lagpartX-lag0(X,i)*rho(i);
+    end
+    
+    ystar=YLoad-lagpartY;
+    xstar=X-lagpartX;
+    
+    
+   
+    
+%     ystar=YLoad-lag0(YLoad,1)*rho(1)-lag0(YLoad,2)*rho(2)-lag0(YLoad,3)*rho(3)-lag0(YLoad,4)*rho(4)-lag0(YLoad,5)*rho(5)-lag0(YLoad,6)*rho(6);
+%     xstar=X-lag0(X,1)*rho(1)-lag0(X,2)*rho(2)-lag0(X,3)*rho(3)-lag0(X,4)*rho(4)-lag0(X,5)*rho(5)-lag0(X,6)*rho(6);
+    
+    ystar=ystar(cor_lag+1:end,:);
+    xstar=xstar(cor_lag+1:end,:);
+    
+    M=inv(inv(Sigma0)+(1/sigma2)*(xstar'*xstar))*(inv(Sigma0)*B0+(1/sigma2)*xstar'*ystar);
+    V=inv(inv(Sigma0)+(1/sigma2)*(xstar'*xstar));
+    
+%     chck=-1;
+%     while chck<0
+        B=M+(randn(1,n)*chol(V))';
+%         b=[B(2) B(3);1   0];
+%         ee=max(abs(eig(b)));
+%         if ee<=1
+%             chck=1;
+%         end
+%     end
+    
+    %step 3 compute rho
+    y=YLoad-X*B;
+    x=ones(m,cor_lag);
+    
+    for i=1:cor_lag
+        x(:,i)=lag0(y,i);
+    end
+    
+    %x=[lag0(y,1) lag0(y,2) lag0(y,3) lag0(y,4) lag0(y,5) lag0(y,6)];%Creating 3 lags for error terms
+    y=y(cor_lag+1:end);
+    x=x(cor_lag+1:end,:);
+    MM=inv(inv(Sigma0r)+(1/sigma2)*(x'*x))*(inv(Sigma0r)*rho0+(1/sigma2)*x'*y);
+    VV=inv(inv(Sigma0r)+(1/sigma2)*(x'*x));
+    %draw rho but again ensure stationarity
+%     chck=-1;
+%     while chck<0
+         rho=MM+(randn(1,6)*chol(VV))';
+%         ee=abs(rho);
+%         if ee<=1
+%             chck=1;
+%         end
+%     end
+    
+    %step 4 sample sigma2 conditional on B from IG(T1,D1);
+    %compute residuals
+    resids=ystar-xstar*B;
+    %compute posterior df and scale matrix
+    T1=T0+T;
+    D1=D0+resids'*resids;
+    %draw from IG
+    z0=randn(T1,1);
+    z0z0=z0'*z0;
+    sigma2=D1/z0z0;
+    
+    if i>burn
+        yhat=zeros(3,1);
+        vhat = zeros(cor_lag+1,1);
+        vhat(1:cor_lag) = y(end-(cor_lag-1):end);
+        yhat(1:2)=YLoad(end-1:end); %startng values
+        cfactor=sqrt(sigma2);  %standard deviation of the shocks
+        
+        
+        
+        for m=7:7
+        
+            
+                vhat_mat(1:cor_lag)=vhat(1:cor_lag);%creating matrix for rho
+        
+            
+            vhat(m)=vhat_mat'*rho+randn(1,1)*cfactor;
+            
+            %vhat(m)=[vhat(m-1) vhat(m-2) vhat(m-3) vhat(m-4) vhat(m-5) vhat(m-6)]*rho+randn(1,1)*cfactor;
+            
+            yhat(m-4)=[1 Trend(TrainDay+k,1) yhat(m-5) yhat(m-6) WeekTmp(TrainDay+k,j) WeekTmpSq(TrainDay+k,j) WeekTmpCb(TrainDay+k,j)...
+                Holiday(TrainDay+k,1) Weekday(TrainDay+k,1) DayAfterHoliday(TrainDay+k,1) DayBfHoliday(TrainDay+k,1) Load8am(TrainDay+k,1)...
+                MidNightTmpMA(TrainDay+k,1) YesterdayMaxTmp(TrainDay+k,1) WeekDummy(TrainDay+k,:) MonthDummy(TrainDay+k,:)...
+                JanTmp(TrainDay+k,j) FebTmp(TrainDay+k,j) MarTmp(TrainDay+k,j) AprTmp(TrainDay+k,j) MayTmp(TrainDay+k,j)...
+                JunTmp(TrainDay+k,j) JulTmp(TrainDay+k,j) AugTmp(TrainDay+k,j) SepTmp(TrainDay+k,j) OctTmp(TrainDay+k,j)...
+                NovTmp(TrainDay+k,j)]*B + vhat(m);
+         
+        end
+        %save
+        out1=[out1 [YLoad;yhat(3:3)]];
+        out2=[out2;B'];
+        out3=[out3;rho'];
+        out4=[out4;sigma2];
+        
+    end
+end
+   
+
+%Coeffi(:,j)=mean(out1) %storing the coefficients (because there are 1000 beta values.. so mean value of beta is taken as coefficients.
+% HisPrdictHHour(:,j)=X*B; %calculates and stores every HalfHour Predicted data
+% HisLoadHhour(:,j)=YLoad;      % stores original HalfHour data
+
+
+%compute mean of the marginal posterior distribution of B
+MB=mean(out2);
+Mrho=mean(out3);
+
+%compute standard error
+VB=std(out2);
+Vrho=std(out3);
+
+%compute 95% error band
+EB=prctile(out1,[5 95]);
+Erho=prctile(out3,[5,95]);
+
+%plot forecast distribution
+outx=prctile(out1',[10 20 30 40 50 60 70 80 90])'; %here prctile calculates percentiles of the forecast distribution
+
+Forct_Mean(k,j)=mean(out1(end:end,:)); % taking mean value
+MeanForecast=Forct_Mean(k,j)
+
+%Pct40(k,j)=outx(TrainDay-6,4); % taking 40 percentile value
+Forct_Median(k,j)=outx(TrainDay-6,5) % taking median value
+toc
+Pct60(k,j)=outx(TrainDay-6,6); % taking 60 percitile value
+
+PP=Forct_Median(k,:);
+Coeffi(:,j)=B; % to store the beta coefficient for one day only
+
+end
+%BCoeffi(k,:)=MB;
+%Varr(k,:)=VB;
+
+update=Y11(TrainDay+k:TrainDay+k,:);
+Y1=[Y1;update];
+
+% ErrHist1=(HisPrdictHHour-HisLoadHhour);
+% ErrHist=abs(ErrHist1);
+% Errpct(k,:)=mean((ErrHist./HisLoadHhour)*100);
+
+PP=Forct_Median(k,:);
+
+%WeekdayLoad=[WeekdayLoad;A]; % just to store forecasted data in WeekdayLoad dataset
+
+%% Prediction error 
+predHist=X*B;
+HisLoad=YLoad;
+
+errHist=(HisLoad-predHist);
+errpct=abs((errHist)./HisLoad)*100;
+MAPE=nanmean(errpct(~isinf(errpct)));
+
+RMSE=sqrt(nanmean((errHist).^2));
+
+
+
+fprintf('MAPE for Every HalfHour');
+fprintf('\n For HalfHour MAPE for HistData on Halfhour %.03f%% \n',MAPE)
+
+fprintf('\n For HalfHour RMSE for HistData on Halfhour %.03f% \n',RMSE)
+toc
+
+k=k+1
+% 
+end
+
+%% MAPE calculation
+
+Aload=Y11(TrainDay+1:end,:); % After TrainDay for actual and forecasted load comparision
+
+for j=1:ForcastDay % this j runs for number of days that we want forcast
+    
+    fload(j,:)=Forct_Median(j,:);
+    
+    minLoad=min(Aload(j,:));
+    maxLoad=max(Aload(j,:));
+    AvgLoad=mean(Aload(j,:));
+    
+    i=1:48;
+    
+    Ymatrix=[Forct_Mean(j,:);Pct60(j,:);fload(j,:);Aload(j,:)];
+    createfigure(i,Ymatrix);
+    
+    ferrHist=(Aload(j,:)-Forct_Median(j,:));
+    ferrpct=abs((ferrHist)./Aload(j,:))*100;
+    ffMAPE(j,:)=ferrpct;
+    Errr(j,:)=ferrHist;
+    fMAPE=nanmean(ferrpct(~isinf(ferrpct)));
+    
+    % fMPE=nanmean(~isinf((ferrHist./Aload(j,:))*100));
+    RMSE=sqrt((ferrHist).^2);
+    
+    fRMSE=mean(RMSE);
+    ffRMSE(j,:)=RMSE;
+    NRMSE=RMSE/(maxLoad-minLoad);
+    
+    fNRMSE=mean(NRMSE);
+    fprintf('\n Performances of forecasting for Every HalfHour\n ');
+    fprintf('\n For HalfHour MAPE for HistData on Halfhour %.03f%% \n',fMAPE);
+    fprintf(' For HalfHour RMSE for HistData on Halfhour %.03f% \n',fRMSE);
+    fprintf(' \n For HalfHour NRMSE for HistData on Halfhour %.03f%% \n',fNRMSE);
+    fprintf('');
+
+end
+
+%% fanplot
+% 
+% for i=1:ForcastDay
+%     preload=Y11(TrainDay-1+i:TrainDay-1+i,:);
+%     forload=Y11(TrainDay+i:TrainDay+i,:);
+%     pre_for=[preload forload];
+%     Ymat=[Aload(i,:);Pct60(i,:);Forct(i,:);Pct80(i,:)];
+%     X1=1:96;X2=49:96;
+%     FanWeekDayForcast(X1,pre_for,X2,Ymat);
+% end
+
+%% for MAPE of individual half hour
+ferrM=zeros(k-1,48);
+fRMSEi=zeros(k-1,48);
+fferrM=zeros(k-1,48);
+fprintf('Performance for Every HalfHour');
+
+for j=1:48
+    ferrM(:,j)=(Aload(1:k-1,j)-fload(1:k-1,j));
+    ferrpctM=abs((ferrM(:,j)./Aload(1:k-1,j)))*100;
+    fMAPEM=nanmean(ferrpctM(~isinf(ferrpctM)));
+    
+    fprintf('\n MAPE for every %d HalfHour %.03f%%',j,fMAPEM);
+    fferrM(:,j)=abs((ferrM(:,j)./Aload(1:k-1,j)))*100;% only for storing purpose
+end
+
+%% everyday forecasted Mape/rmse value
+fffMapeRmse=zeros(ForcastDay,2);
+for i=1:ForcastDay
+    fffMapeRmse(i,1)=mean(ffMAPE(i,:));
+    fffMapeRmse(i,2)=mean(ffRMSE(i,:));
+end
+
+save Weekly.mat Aload out1 out2 out3 Forct_Mean Forct_Median Pct60 PP BCoeffi Varr Errr ffMAPE ffRMSE
+
+%% convergence of Gibbs check
+% 
+
+% xlswrite('HourlyMape',ffMAPE);
+% HourlyMape=csvread('HourlyMape.csv')
+% daywise_Hourly_mape=zeros(7,48);
+% for i=1:7
+%     daywise_Hourly_mape(i,:)=
+%     
+% av=mean(HourlyMape(1:end,:))
+
+
+% 
+% title('\beta');
+% for i=1:6
+% subplot(3,2,i)
+% plot(out1(:,i));
+% title('\beta');
+% xlabel('Gibbs iterations')
+% end 
+% 
+% title('\beta');
+% for i=1:6
+% subplot(3,2,i)
+% plot(out1(:,i));
+% title('\beta');
+% xlabel('Gibbs iterations')
+% end 
+% 
+% title('\beta');
+% for i=1:6
+% subplot(3,2,i)
+% plot(out1(:,i));
+% title('\beta');
+% xlabel('Gibbs iterations')
+% end 
+% 
+% title('\beta');
+% for i=1:6
+% subplot(3,2,i)
+% plot(out1(:,i));
+% title('\beta');
+% xlabel('Gibbs iterations')
+% end 
+% 
+% 
+% 
+% title('\beta');
+% for i=6:11
+% subplot(5,4,i)
+% plot(out1(:,i));
+% title('\beta');
+% xlabel('Gibbs iterations')
+% end 
+% 
+% 
+% 
+% figure
+% plot(out2(:,1));
+% title('\sigma');
+% xlabel('Gibbs iterations')
+% 
+% H=20;
+% for i=1:20
+%     subplot(5,4,i)
+%     plot(rmean1(out1(:,i),H))
+%     title('\beta')
+%     xlabel('Gibbs iterations')
+% end
+% 
+% figure
+% plot(rmean1(out2(:,1),H));
+% title('\rho');
+% xlabel('Gibbs iterations')
+% axis tight
+% 
+%  for i=1:20
+%      subplot(5,4,i)
+%      autocorr(out1(:,i));
+%      title('\beta')
+%     xlabel('Gibbs iterations');
+%  end
+%  
+%  figure 
+%  autocorr(out2(:,1));
+%  title('\sigma');
+%  xlabel('Gibbs iterations');
+
+
+
+%% for ARMA lag choose
+
+
+
+
+
+
+
+% 
+% %% choose ARMA lag using BIC
+% for i=1:5:48
+%     figure
+%     plot(load(:,i))
+%     title(['Electricity load profile of  ',num2str(i), ' half hour'])
+%     
+%     %plot ACF and PACF
+%     figure
+%     subplot(2,1,1)
+%     autocorr(load(:,i))
+%     title(['ACF for ',num2str(i), ' half hour'])
+%     subplot(2,1,2)
+%     parcorr(load(:,i))
+%     title([' PACF for ',num2str(i), ' half hour'])
+%     
+%     
+%     %since there is different variation in lag value of ACF and PACF, we select
+%     %try to find the best order for ARMA within [10 10]. i.e 100 combinations.
+% 
+%     %fit ARMA(p,q) model
+% 
+%     LOGL = zeros(6,6); %Initialize
+%     PQ = zeros(6,6);
+% 
+%     for p = 1:6
+%         for q = 1:6
+%             mod = arima(p,0,q);
+%             [fit,~,logL] = estimate(mod,load(:,i),'print',false);
+%             LOGL(p,q) = logL;
+%             PQ(p,q) = p+q;
+%          end
+%     end
+%     
+%     %calculate the BIC value
+%     
+%     LOGL = reshape(LOGL,36,1);
+%     PQ = reshape(PQ,36,1);
+%     [~,bic] = aicbic(LOGL,PQ+1,length(load(:,i)));
+%     mat=reshape(bic,6,6)
+% 
+%     %From BIC matrix--> mat,the rows correspond to the AR degree (p) and the 
+%     %columns correspond to the MA degree (q). The smallest value is best. 
+% end
+% 
+% 
+
+%% For convergence of beta 
+
+
+
+
